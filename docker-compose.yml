@@ -25,6 +25,7 @@ services:
     container_name: whisper
     volumes:
       - audio-data:/data/audio
+      - ./sample:/sample
     environment:
       - REDIS_URL=redis://redis:6379
       - WHISPER_MODEL=base

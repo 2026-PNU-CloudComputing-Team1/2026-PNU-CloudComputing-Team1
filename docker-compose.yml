@@ -1,0 +1,37 @@
+version: '3.9'
+
+volumes:
+  audio-data:
+
+networks:
+  streaming:
+    driver: bridge
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - streaming
+
+  whisper:
+    build:
+      context: ./whisper
+      args:
+        WHISPER_MODEL: base
+    container_name: whisper
+    volumes:
+      - audio-data:/data/audio
+      - ./sample:/sample
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WHISPER_MODEL=base
+      - SOURCE_LANG=ko # 한국어 음식 인식 후 텍스트로 변환
+      - SEGMENT_DURATION=2
+    networks:
+      - streaming
+    depends_on:
+      - redis

@@ -2,6 +2,8 @@ version: '3.9'
 
 volumes:
   audio-data:
+  hf-cache:    
+  # HuggingFace 모델 캐시 — 첫 실행 후 재다운로드 없음
 
 networks:
   streaming:
@@ -13,7 +15,8 @@ services:
     image: redis:7-alpine
     container_name: redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
+      # 로컬 redis와 포트 충돌 방지 위해 6380으로 매핑
     networks:
       - streaming
 
@@ -26,6 +29,7 @@ services:
     volumes:
       - audio-data:/data/audio
       - ./sample:/sample
+      - hf-cache:/root/.cache/huggingface
     environment:
       - REDIS_URL=redis://redis:6379
       - WHISPER_MODEL=base

@@ -9,7 +9,7 @@ import json
 import time
 import redis
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380")
 
 
 def push(audio_path: str, seg_num: int = 0):

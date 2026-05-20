@@ -117,10 +117,7 @@ def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
     try:
         segments = transcribe(model, merged_path)
 
-        if not segments:
-            log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 묵음 구간, 스킵")
-            return
-
+        published = []
         for seg in segments:
             text = seg.text.strip()
             if not text:
@@ -134,12 +131,16 @@ def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
                 "ingested_at": ingested_at,
             }
             r.publish("stt:results", json.dumps(result))
+            published.append(text)
+
+        if not published:
+            log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 묵음 구간, 스킵")
+            return
 
         stt_delay = time.time() - ingested_at
-        full_text = " ".join(seg.text.strip() for seg in segments)
         log.info(
             f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d} 완료 "
-            f"| '{full_text[:60]}' | {stt_delay:.1f}s"
+            f"| '{' '.join(published)[:60]}' | {stt_delay:.1f}s"
         )
     finally:
         # 성공/실패 관계없이 임시 병합 파일 삭제

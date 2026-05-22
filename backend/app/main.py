@@ -14,7 +14,7 @@ from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.models import StreamControlRequest, StreamInfo, TranslationRequest
+from app.models import StreamControlRequest, StreamInfo, SubtitleMessage, TranslationRequest
 from app.services.cache_service import CacheService
 from app.services.subtitle_service import SubtitleService
 from app.services.translation_service import TranslationService
@@ -27,7 +27,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
 USE_MOCK_SUBTITLES = os.getenv("USE_MOCK_SUBTITLES", "false").lower() == "true"
 STT_STREAM_ID = os.getenv("STT_STREAM_ID", "demo")
-STT_RESULTS_CHANNEL = os.getenv("STT_RESULTS_CHANNEL", "stt:results")
+# translator가 번역 완료 후 모든 언어를 묶어서 publish하는 채널.
+# 이전엔 backend가 stt:results를 직접 구독해 mock prefix로 가짜 번역을 만들었으나,
+# 이제 translator의 Google 번역 결과를 그대로 받아 WebSocket으로 브로드캐스트한다.
+SUBTITLE_TRANSLATED_CHANNEL = os.getenv("SUBTITLE_TRANSLATED_CHANNEL", "subtitle:translated")
 CAPTION_INPUT_PATH = os.getenv("CAPTION_INPUT_PATH", "/sample/AWS.mp4")
 CAPTION_LIVE_INPUT_URL = os.getenv("CAPTION_LIVE_INPUT_URL", "rtmp://mediamtx:1935/live/demo")
 CAPTION_OUTPUT_DIR = os.getenv("CAPTION_OUTPUT_DIR", "/data/audio")
@@ -65,20 +68,20 @@ streams: Dict[str, StreamInfo] = {
 }
 stream_tasks: Dict[str, asyncio.Task] = {}
 caption_demo_tasks: Dict[str, asyncio.Task] = {}
-stt_listener_task: asyncio.Task | None = None
+subtitle_listener_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
 async def startup_event():
     await cache.set_stream("demo", streams["demo"].model_dump(mode="json"))
-    global stt_listener_task
-    stt_listener_task = asyncio.create_task(stt_results_listener())
+    global subtitle_listener_task
+    subtitle_listener_task = asyncio.create_task(translated_subtitle_listener())
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    if stt_listener_task:
-        stt_listener_task.cancel()
+    if subtitle_listener_task:
+        subtitle_listener_task.cancel()
 
 
 @app.get("/")
@@ -471,15 +474,21 @@ async def run_live_caption_demo(stream_id: str, reset: bool = True):
             caption_demo_tasks.pop(stream_id, None)
 
 
-async def stt_results_listener():
+async def translated_subtitle_listener():
+    """translator가 publish한 subtitle:translated 메시지를 받아 WebSocket으로 브로드캐스트.
+
+    translator 메시지 포맷:
+      {segment_num, original_text, translations: {en, ja, zh, ...},
+       start_pts, end_pts, subtitle_delay, ingested_at}
+    """
     try:
         client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         client.ping()
         pubsub = client.pubsub()
-        pubsub.subscribe(STT_RESULTS_CHANNEL)
-        logger.info("STT results listener subscribed channel=%s", STT_RESULTS_CHANNEL)
+        pubsub.subscribe(SUBTITLE_TRANSLATED_CHANNEL)
+        logger.info("Translated subtitle listener subscribed channel=%s", SUBTITLE_TRANSLATED_CHANNEL)
     except Exception as exc:
-        logger.warning("STT results listener disabled: %s", exc)
+        logger.warning("Translated subtitle listener disabled: %s", exc)
         return
 
     try:
@@ -489,11 +498,12 @@ async def stt_results_listener():
                 continue
 
             payload = json.loads(message["data"])
-            text = payload.get("text", "").strip()
+            text = (payload.get("original_text") or "").strip()
+            translations = payload.get("translations") or {}
             if not text:
                 continue
 
-            stream = streams.setdefault(
+            streams.setdefault(
                 STT_STREAM_ID,
                 StreamInfo(
                     stream_id=STT_STREAM_ID,
@@ -504,17 +514,19 @@ async def stt_results_listener():
             )
             start_pts = float(payload.get("start_pts", 0.0))
             end_pts = float(payload.get("end_pts", start_pts + 2.0))
-            segment_num = payload.get("segment_num", int(start_pts // 2))
+            segment_num = payload.get("segment_num", int(start_pts // SEGMENT_DURATION))
 
-            subtitle = await subtitle_service.create_subtitle(
+            # translator의 진짜 번역 결과를 그대로 사용 — mock 호출 없음.
+            subtitle = SubtitleMessage(
+                id=f"{STT_STREAM_ID}-stt-{segment_num}-{int(start_pts * 1000)}",
                 stream_id=STT_STREAM_ID,
-                text=text,
                 timestamp=start_pts,
                 duration=max(end_pts - start_pts, 0.1),
-                target_langs=stream.target_languages,
-                source_lang=stream.source_language,
-                subtitle_id=f"{STT_STREAM_ID}-stt-{segment_num}-{int(start_pts * 1000)}",
+                original_text=text,
+                translations=translations,
+                created_at=datetime.utcnow(),
             )
+            await cache.append_subtitle(STT_STREAM_ID, subtitle.model_dump(mode="json"))
             await manager.broadcast(
                 STT_STREAM_ID,
                 {
@@ -523,7 +535,10 @@ async def stt_results_listener():
                     "data": subtitle.model_dump(mode="json"),
                 },
             )
-            logger.info("Broadcast STT subtitle stream=%s segment=%s", STT_STREAM_ID, segment_num)
+            logger.info(
+                "Broadcast translated subtitle stream=%s segment=%s langs=%s",
+                STT_STREAM_ID, segment_num, list(translations.keys()),
+            )
     except asyncio.CancelledError:
         pubsub.close()
         raise

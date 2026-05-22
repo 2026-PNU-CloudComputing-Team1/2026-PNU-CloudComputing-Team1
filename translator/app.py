@@ -107,13 +107,28 @@ async def handle_stt_result(msg: dict, r: aioredis.Redis, client: translate.Clie
     log.info(f"[translator] seg{segment_num:04d} 번역 시작: '{text[:60]}'")
 
     translations = await translate_all(client, text, TARGET_LANGS)
+    subtitle_delay = time.time() - ingested_at
 
+    # ① backend의 WebSocket 브로드캐스트용 — 모든 언어를 한 번에 묶어 publish.
+    #    backend가 이 채널을 구독해 SubtitleMessage 그대로 프론트로 전달.
+    await r.publish(
+        "subtitle:translated",
+        json.dumps({
+            "segment_num":    segment_num,
+            "original_text":  text,
+            "translations":   translations,
+            "start_pts":      start_pts,
+            "end_pts":        end_pts,
+            "subtitle_delay": round(subtitle_delay, 2),
+            "ingested_at":    ingested_at,
+        }),
+    )
+
+    # ② subtitle-pub의 HLS playlist 갱신용 — 언어별 VTT 파일 + vtt:ready (기존 동작 유지).
     for lang, translated in translations.items():
         vtt_path = await asyncio.to_thread(
             write_vtt, lang, segment_num, start_pts, end_pts, translated
         )
-        subtitle_delay = time.time() - ingested_at
-
         await r.publish(
             "vtt:ready",
             json.dumps({

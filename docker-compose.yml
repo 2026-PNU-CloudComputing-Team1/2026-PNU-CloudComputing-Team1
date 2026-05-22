@@ -91,7 +91,7 @@ services:
       FRONTEND_ORIGIN: http://localhost:3000
       USE_MOCK_SUBTITLES: "false"
       STT_STREAM_ID: demo
-      STT_RESULTS_CHANNEL: stt:results
+      SUBTITLE_TRANSLATED_CHANNEL: subtitle:translated
       CAPTION_INPUT_PATH: /sample/AWS.mp4
       CAPTION_LIVE_INPUT_URL: rtmp://mediamtx:1935/live/smooth
       CAPTION_OUTPUT_DIR: /data/audio

@@ -1,41 +1,184 @@
-version: '3.9'
-
-volumes:
-  audio-data:
-  hf-cache:    
-  # HuggingFace 모델 캐시 — 첫 실행 후 재다운로드 없음
-
-networks:
-  streaming:
-    driver: bridge
-
 services:
-
   redis:
     image: redis:7-alpine
-    container_name: redis
     ports:
-      - "6380:6379"
-      # 로컬 redis와 포트 충돌 방지 위해 6380으로 매핑
+      - "6379:6379"
     networks:
-      - streaming
+      - streaming-net
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    environment:
+      MTX_HLSADDRESS: :8888
+      MTX_RTMPADDRESS: :1935
+      MTX_HLSALLOWORIGINS: "*"
+      MTX_HLSVARIANT: mpegts
+    ports:
+      - "1935:1935"
+      - "8888:8888"
+      - "9997:9997"
+    networks:
+      - streaming-net
+
+  stream-publisher:
+    build:
+      context: ./backend
+    command:
+      - ffmpeg
+      - -re
+      - -stream_loop
+      - "-1"
+      - -i
+      - /sample/AWS.mp4
+      - -c:v
+      - libx264
+      - -preset
+      - veryfast
+      - -tune
+      - zerolatency
+      - -c:a
+      - aac
+      - -f
+      - flv
+      - rtmp://mediamtx:1935/live/demo
+    profiles:
+      - sample-live
+    volumes:
+      - ./sample:/sample
+    depends_on:
+      - mediamtx
+    networks:
+      - streaming-net
+
+  live-transcoder:
+    build:
+      context: ./backend
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          ffmpeg -hide_banner -loglevel warning \
+            -fflags nobuffer -flags low_delay \
+            -i rtmp://mediamtx:1935/live/demo \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -r 30 -g 30 -keyint_min 30 -sc_threshold 0 \
+            -b:v 2500k -maxrate 2500k -bufsize 5000k \
+            -c:a aac -ar 44100 -b:a 128k \
+            -f flv rtmp://mediamtx:1935/live/smooth
+          sleep 1
+        done
+    depends_on:
+      - mediamtx
+    networks:
+      - streaming-net
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      FRONTEND_ORIGIN: http://localhost:3000
+      USE_MOCK_SUBTITLES: "false"
+      STT_STREAM_ID: demo
+      STT_RESULTS_CHANNEL: stt:results
+      CAPTION_INPUT_PATH: /sample/AWS.mp4
+      CAPTION_LIVE_INPUT_URL: rtmp://mediamtx:1935/live/smooth
+      CAPTION_OUTPUT_DIR: /data/audio
+      SEGMENT_DURATION: 1.5
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./sample:/sample
+      - audio-data:/data/audio
+    depends_on:
+      - redis
+      - mediamtx
+    networks:
+      - streaming-net
 
   whisper:
     build:
       context: ./whisper
       args:
         WHISPER_MODEL: base
-    container_name: whisper
+    environment:
+      REDIS_URL: redis://redis:6379
+      WHISPER_MODEL: base
+      SOURCE_LANG: ko
+      SEGMENT_DURATION: 1.5
+      BUFFER_MAX_SEC: 3
+      WHISPER_BEAM_SIZE: 3
+      MIN_TEXT_CHARS: 3
+      MAX_NO_SPEECH_PROB: 0.65
+      MIN_AVG_LOGPROB: -1.0
+      SILENCE_RMS_THRESHOLD: 120
+      WHISPER_VAD_FILTER: "false"
     volumes:
       - audio-data:/data/audio
       - ./sample:/sample
       - hf-cache:/root/.cache/huggingface
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - WHISPER_MODEL=base
-      - SOURCE_LANG=ko # 한국어 음식 인식 후 텍스트로 변환
-      - SEGMENT_DURATION=2
-    networks:
-      - streaming
     depends_on:
       - redis
+    networks:
+      - streaming-net
+
+  audio-extractor:
+    build:
+      context: ./audio-extractor
+    profiles:
+      - test
+    environment:
+      REDIS_URL: redis://redis:6379
+      INPUT_URL: /sample/demo.mp4
+      OUTPUT_DIR: /data/audio
+      SEGMENT_DURATION: 2
+      REALTIME: "true"
+    volumes:
+      - audio-data:/data/audio
+      - ./sample:/sample
+    depends_on:
+      - redis
+      - whisper
+    networks:
+      - streaming-net
+
+  audio-pusher:
+    build:
+      context: ./audio-pusher
+    profiles:
+      - test
+    environment:
+      REDIS_URL: redis://redis:6379
+      SAMPLE_DIR: /sample
+      SEGMENT_DURATION: 2
+      REALTIME: "true"
+    volumes:
+      - ./sample:/sample
+    depends_on:
+      - redis
+      - whisper
+    networks:
+      - streaming-net
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+      - mediamtx
+    networks:
+      - streaming-net
+
+networks:
+  streaming-net:
+    driver: bridge
+
+volumes:
+  audio-data:
+  hf-cache:

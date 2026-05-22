@@ -25,6 +25,10 @@ VTT_DIR = os.getenv("VTT_DIR", "/data/subtitles")
 SEGMENT_DURATION = float(os.getenv("SEGMENT_DURATION", "2"))
 PLAYLIST_SIZE = int(os.getenv("PLAYLIST_SIZE", "5"))
 
+# master.m3u8의 EXT-X-STREAM-INF 아래에 들어갈 영상 variant URI
+# live-transcoder가 publish하는 경로(live/smooth)와 일치해야 영상이 404 없이 재생됨
+HLS_STREAM_URI = os.getenv("HLS_STREAM_URI", "/hls/live/smooth/index.m3u8")
+
 TARGET_LANGS = ["en", "zh", "ja"]
 LANG_NAMES   = {"en": "English", "zh": "Chinese", "ja": "Japanese"}
 
@@ -78,7 +82,7 @@ def write_master_playlist() -> None:
     lines += [
         "",
         '#EXT-X-STREAM-INF:BANDWIDTH=2800000,SUBTITLES="subs"',
-        "/hls/live/stream/index.m3u8",
+        HLS_STREAM_URI,
     ]
 
     with open(os.path.join(VTT_DIR, "master.m3u8"), "w") as f:

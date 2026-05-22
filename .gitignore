@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env
 .env.*
+!.env.example
 node_modules/
 dist/
 build/

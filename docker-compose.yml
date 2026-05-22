@@ -9,40 +9,39 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:latest
     environment:
-      MTX_HLSADDRESS: :8888
-      MTX_RTMPADDRESS: :1935
       MTX_HLSALLOWORIGINS: "*"
-      MTX_HLSVARIANT: mpegts
-      MTX_API: "yes"
-      MTX_APIADDRESS: :9997
+      # publisher 계정의 비밀번호를 env로 override.
+      # 인덱스 0이 mediamtx.yml의 첫 번째 user(publisher)에 해당.
+      # .env에 RTMP_PUBLISH_PASS=... 로 override 가능.
+      MTX_AUTHINTERNALUSERS_0_PASS: ${RTMP_PUBLISH_PASS:-changeme}
+    volumes:
+      # default config 기반에 authInternalUsers만 publisher 인증 적용.
+      # default config를 그대로 사용해야 paths 등 다른 필수 필드 손상 없음.
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     ports:
+      # 1935(RTMP)만 외부 노출 — OBS push용. publish auth로 보호.
+      # 9997(API), 8888(HLS) 호스트 매핑 제거: API는 내부 전용,
+      # HLS는 nginx-origin(:8080/hls/) 경유로만 외부 노출.
       - "1935:1935"
-      - "8888:8888"
-      - "9997:9997"
     networks:
       - streaming-net
 
   stream-publisher:
     build:
       context: ./backend
+    environment:
+      RTMP_PUBLISH_PASS: ${RTMP_PUBLISH_PASS:-changeme}
+    # RTMP 인증은 query string(?user=&pass=) 방식. user:pass@host 방식은
+    # FFmpeg가 RTMP auth 메시지로 변환하지 않아 mediamtx에서 인증 실패.
+    # $$는 docker compose의 변수 치환을 escape — 컨테이너 안 sh가 평가.
     command:
-      - ffmpeg
-      - -re
-      - -stream_loop
-      - "-1"
-      - -i
-      - /sample/AWS.mp4
-      - -c:v
-      - libx264
-      - -preset
-      - veryfast
-      - -tune
-      - zerolatency
-      - -c:a
-      - aac
-      - -f
-      - flv
-      - rtmp://mediamtx:1935/live/demo
+      - sh
+      - -c
+      - |
+        ffmpeg -re -stream_loop -1 -i /sample/AWS.mp4 \
+          -c:v libx264 -preset veryfast -tune zerolatency \
+          -c:a aac \
+          -f flv "rtmp://mediamtx:1935/live/demo?user=publisher&pass=$${RTMP_PUBLISH_PASS}"
     profiles:
       - sample-live
     volumes:
@@ -55,6 +54,8 @@ services:
   live-transcoder:
     build:
       context: ./backend
+    environment:
+      RTMP_PUBLISH_PASS: ${RTMP_PUBLISH_PASS:-changeme}
     command:
       - sh
       - -c
@@ -69,12 +70,12 @@ services:
           ffmpeg -hide_banner -loglevel warning \
             -analyzeduration 2000000 -probesize 5000000 \
             -fflags nobuffer -flags low_delay \
-            -i rtmp://mediamtx:1935/live/demo \
+            -i "rtmp://mediamtx:1935/live/demo?user=publisher&pass=$${RTMP_PUBLISH_PASS}" \
             -c:v libx264 -preset ultrafast -tune zerolatency \
             -r 30 -g 30 -keyint_min 30 -sc_threshold 0 \
             -b:v 2500k -maxrate 2500k -bufsize 5000k \
             -c:a aac -ar 44100 -b:a 128k \
-            -f flv rtmp://mediamtx:1935/live/smooth
+            -f flv "rtmp://mediamtx:1935/live/smooth?user=publisher&pass=$${RTMP_PUBLISH_PASS}"
           sleep 1
         done
     depends_on:
@@ -159,6 +160,8 @@ services:
       VTT_DIR: /data/subtitles
       SEGMENT_DURATION: 1.5
       PLAYLIST_SIZE: 5
+      # live-transcoder의 publish 경로(live/smooth)와 일치해야 master.m3u8 영상 404 없음
+      HLS_STREAM_URI: /hls/live/smooth/index.m3u8
     depends_on:
       - redis
     networks:

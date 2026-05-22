@@ -24,3 +24,6 @@ tmp/
 
 # Keep sample mp4 files for the demo, but do not commit generated chunks.
 sample/segment_*.wav
+
+ARCHITECTURE.md
+tasks.md

@@ -1,0 +1,2 @@
+redis[asyncio]>=5.0
+google-cloud-translate>=3.15

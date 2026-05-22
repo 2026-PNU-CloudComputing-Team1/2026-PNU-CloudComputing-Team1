@@ -1,0 +1,9 @@
+#EXTM3U
+#EXT-X-VERSION:3
+
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="en",NAME="English",DEFAULT=YES,URI="/subtitles/en/playlist.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="zh",NAME="Chinese",DEFAULT=NO,URI="/subtitles/zh/playlist.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="ja",NAME="Japanese",DEFAULT=NO,URI="/subtitles/ja/playlist.m3u8"
+
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,SUBTITLES="subs"
+/hls/live/stream/index.m3u8

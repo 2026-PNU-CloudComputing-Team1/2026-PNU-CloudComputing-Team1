@@ -2,8 +2,9 @@ version: '3.9'
 
 volumes:
   audio-data:
-  hf-cache:    
+  hf-cache:
   # HuggingFace 모델 캐시 — 첫 실행 후 재다운로드 없음
+  subtitle-data:
 
 networks:
   streaming:
@@ -39,3 +40,32 @@ services:
       - streaming
     depends_on:
       - redis
+
+  subtitle-pub:
+    build:
+      context: ./subtitle-pub
+    container_name: subtitle-pub
+    volumes:
+      - subtitle-data:/data/subtitles
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - VTT_DIR=/data/subtitles
+      - SEGMENT_DURATION=2
+      - PLAYLIST_SIZE=5
+    networks:
+      - streaming
+    depends_on:
+      - redis
+
+  nginx-origin:
+    build:
+      context: ./nginx-origin
+    container_name: nginx-origin
+    ports:
+      - "8080:8080"
+    volumes:
+      - subtitle-data:/data/subtitles:ro
+    networks:
+      - streaming
+    depends_on:
+      - subtitle-pub

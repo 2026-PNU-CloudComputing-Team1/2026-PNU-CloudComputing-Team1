@@ -123,6 +123,33 @@ services:
     networks:
       - streaming-net
 
+  subtitle-pub:
+    build:
+      context: ./subtitle-pub
+    volumes:
+      - subtitle-data:/data/subtitles
+    environment:
+      REDIS_URL: redis://redis:6379
+      VTT_DIR: /data/subtitles
+      SEGMENT_DURATION: 2
+      PLAYLIST_SIZE: 5
+    depends_on:
+      - redis
+    networks:
+      - streaming-net
+
+  nginx-origin:
+    build:
+      context: ./nginx-origin
+    ports:
+      - "8080:8080"
+    volumes:
+      - subtitle-data:/data/subtitles:ro
+    depends_on:
+      - subtitle-pub
+    networks:
+      - streaming-net
+
   audio-extractor:
     build:
       context: ./audio-extractor
@@ -182,3 +209,4 @@ networks:
 volumes:
   audio-data:
   hf-cache:
+  subtitle-data:

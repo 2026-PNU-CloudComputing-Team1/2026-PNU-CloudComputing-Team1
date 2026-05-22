@@ -1,11 +1,26 @@
-ARCHITECTURE.md
-
-# Python
 __pycache__/
 *.pyc
-*.pyo
 .venv/
 venv/
-
-# 환경변수
 .env
+.env.*
+node_modules/
+dist/
+build/
+.DS_Store
+credentials.json
+
+# Generated audio/output files
+*.wav
+*.mp3
+*.aac
+*.m4a
+*.log
+
+# Local runtime data
+data/
+tmp/
+.cache/
+
+# Keep sample mp4 files for the demo, but do not commit generated chunks.
+sample/segment_*.wav

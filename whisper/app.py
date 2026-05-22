@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import re
 import struct
 import tempfile
 import time
@@ -37,6 +38,25 @@ BUFFER_MAX_SEC = float(os.getenv("BUFFER_MAX_SEC", "10"))
 
 # 이 RMS 값 미만이면 묵음으로 판단해 버퍼를 flush하는 트리거로 사용
 SILENCE_RMS_THRESHOLD = int(os.getenv("SILENCE_RMS_THRESHOLD", "500"))
+
+# faster-whisper 내부 VAD는 짧은 라이브 마이크 발화를 과하게 제거할 수 있음
+WHISPER_VAD_FILTER = os.getenv("WHISPER_VAD_FILTER", "false").lower() == "true"
+
+# beam size를 올리면 조금 느려지지만 짧은 한국어 음성 인식이 안정적임
+WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "3"))
+
+# 발표 데모에서 너무 짧은 오인식 조각이 로그를 어지럽히는 것을 줄임
+MIN_TEXT_CHARS = int(os.getenv("MIN_TEXT_CHARS", "3"))
+
+# 묵음/저신뢰 구간에서 Whisper가 임의 문장을 만들어내는 현상을 줄임
+MAX_NO_SPEECH_PROB = float(os.getenv("MAX_NO_SPEECH_PROB", "0.65"))
+MIN_AVG_LOGPROB = float(os.getenv("MIN_AVG_LOGPROB", "-1.0"))
+
+# 강의 영상 도메인 단어를 힌트로 줘서 기술 용어 인식 안정성을 조금 높임
+WHISPER_INITIAL_PROMPT = os.getenv(
+    "WHISPER_INITIAL_PROMPT",
+    "",
+)
 
 
 def check_wav_duration(audio_path: str) -> None:
@@ -78,6 +98,14 @@ def merge_wavs(audio_paths: list[str]) -> str:
     return tmp.name
 
 
+def existing_jobs(buffer: list[dict]) -> list[dict]:
+    existing = [job for job in buffer if os.path.exists(job["audio_path"])]
+    dropped = len(buffer) - len(existing)
+    if dropped:
+        log.warning(f"[whisper] 사라진 오디오 조각 {dropped}개 스킵")
+    return existing
+
+
 def load_model() -> WhisperModel:
     # Whisper 모델을 CPU에 int8 양자화로 로드 (속도/메모리 절약)
     log.info(f"[whisper] 모델 로드 중: {WHISPER_MODEL}")
@@ -94,15 +122,48 @@ def transcribe(model: WhisperModel, audio_path: str) -> list:
     segments, _ = model.transcribe(
         audio_path,
         language=SOURCE_LANG,
-        beam_size=1,
-        vad_filter=True,
+        beam_size=WHISPER_BEAM_SIZE,
+        condition_on_previous_text=False,
+        initial_prompt=WHISPER_INITIAL_PROMPT,
+        temperature=0.0,
+        vad_filter=WHISPER_VAD_FILTER,
         vad_parameters={"min_silence_duration_ms": 300},
     )
     
     return list(segments)
 
 
+def normalize_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def is_publishable(text: str) -> bool:
+    meaningful = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
+    return len(meaningful) >= MIN_TEXT_CHARS
+
+
+def has_repetition_loop(text: str) -> bool:
+    tokens = re.findall(r"[0-9A-Za-z가-힣]+", text)
+    if not tokens:
+        return False
+
+    for token in set(tokens):
+        if len(token) >= 2 and tokens.count(token) >= 4:
+            return True
+
+    bigrams = [" ".join(tokens[index:index + 2]) for index in range(len(tokens) - 1)]
+    return any(bigrams.count(bigram) >= 3 for bigram in set(bigrams))
+
+
+def is_reliable_segment(segment) -> bool:
+    no_speech_prob = getattr(segment, "no_speech_prob", 0.0)
+    avg_logprob = getattr(segment, "avg_logprob", 0.0)
+    return no_speech_prob <= MAX_NO_SPEECH_PROB and avg_logprob >= MIN_AVG_LOGPROB
+
+
 def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
+    buffer = existing_jobs(buffer)
     if not buffer:
         return
 
@@ -119,28 +180,36 @@ def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
 
         published = []
         for seg in segments:
-            text = seg.text.strip()
-            if not text:
+            if not is_reliable_segment(seg):
                 continue
-            # Whisper가 반환한 seg.start/end는 병합 파일 기준이므로 base_pts를 더해 절대 시간으로 변환
-            result = {
-                "segment_num": first_seg_num,
-                "text":        text,
-                "start_pts":   base_pts + seg.start,
-                "end_pts":     base_pts + seg.end,
-                "ingested_at": ingested_at,
-            }
-            r.publish("stt:results", json.dumps(result))
+
+            text = normalize_text(seg.text)
+            if not text or not is_publishable(text):
+                continue
             published.append(text)
 
         if not published:
             log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 묵음 구간, 스킵")
             return
 
+        combined_text = normalize_text(" ".join(published))
+        if has_repetition_loop(combined_text):
+            log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 반복 환각 의심, 스킵")
+            return
+
+        result = {
+            "segment_num": first_seg_num,
+            "text": combined_text,
+            "start_pts": base_pts,
+            "end_pts": base_pts + (len(buffer) * SEGMENT_DURATION),
+            "ingested_at": ingested_at,
+        }
+        r.publish("stt:results", json.dumps(result))
+
         stt_delay = time.time() - ingested_at
         log.info(
             f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d} 완료 "
-            f"| '{' '.join(published)[:60]}' | {stt_delay:.1f}s"
+            f"| '{combined_text[:60]}' | {stt_delay:.1f}s"
         )
     finally:
         # 성공/실패 관계없이 임시 병합 파일 삭제

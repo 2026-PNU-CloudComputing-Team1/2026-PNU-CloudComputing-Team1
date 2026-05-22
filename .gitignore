@@ -9,6 +9,7 @@ dist/
 build/
 .DS_Store
 credentials.json
+secrets/
 
 # Generated audio/output files
 *.wav

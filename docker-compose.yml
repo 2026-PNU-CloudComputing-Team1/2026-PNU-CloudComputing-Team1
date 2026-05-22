@@ -123,6 +123,23 @@ services:
     networks:
       - streaming-net
 
+  translator:
+    build:
+      context: ./translator
+    environment:
+      REDIS_URL: redis://redis:6379
+      VTT_DIR: /data/subtitles
+      SOURCE_LANG: ko
+      TARGET_LANGS: en,zh,ja
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-key.json
+    volumes:
+      - subtitle-data:/data/subtitles
+      - ./secrets/gcp-key.json:/secrets/gcp-key.json:ro
+    depends_on:
+      - redis
+    networks:
+      - streaming-net
+
   subtitle-pub:
     build:
       context: ./subtitle-pub

@@ -10,72 +10,60 @@ services:
     image: bluenviron/mediamtx:latest
     environment:
       MTX_HLSALLOWORIGINS: "*"
-      # publisher 계정의 비밀번호를 env로 override.
-      # 인덱스 0이 mediamtx.yml의 첫 번째 user(publisher)에 해당.
-      # .env에 RTMP_PUBLISH_PASS=... 로 override 가능.
-      MTX_AUTHINTERNALUSERS_0_PASS: ${RTMP_PUBLISH_PASS:-changeme}
     volumes:
-      # default config 기반에 authInternalUsers만 publisher 인증 적용.
-      # default config를 그대로 사용해야 paths 등 다른 필수 필드 손상 없음.
       - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      # 1935(RTMP)만 외부 노출 — OBS push용. publish auth로 보호.
+      # 1935(RTMP)만 외부 노출 — OBS push용.
       # 9997(API), 8888(HLS) 호스트 매핑 제거: API는 내부 전용,
       # HLS는 nginx-origin(:8080/hls/) 경유로만 외부 노출.
       - "1935:1935"
     networks:
       - streaming-net
 
-  stream-publisher:
-    build:
-      context: ./backend
-    environment:
-      RTMP_PUBLISH_PASS: ${RTMP_PUBLISH_PASS:-changeme}
-    # RTMP 인증은 query string(?user=&pass=) 방식. user:pass@host 방식은
-    # FFmpeg가 RTMP auth 메시지로 변환하지 않아 mediamtx에서 인증 실패.
-    # $$는 docker compose의 변수 치환을 escape — 컨테이너 안 sh가 평가.
-    command:
-      - sh
-      - -c
-      - |
-        ffmpeg -re -stream_loop -1 -i /sample/AWS.mp4 \
-          -c:v libx264 -preset veryfast -tune zerolatency \
-          -c:a aac \
-          -f flv "rtmp://mediamtx:1935/live/demo?user=publisher&pass=$${RTMP_PUBLISH_PASS}"
-    profiles:
-      - sample-live
-    volumes:
-      - ./sample:/sample
-    depends_on:
-      - mediamtx
-    networks:
-      - streaming-net
+  # OBS로 직접 송출 시 사용하지 않음. 샘플 영상으로 라이브 시뮬레이션이 필요할 때만 주석 해제.
+  # stream-publisher:
+  #   build:
+  #     context: ./backend
+  #   command:
+  #     - sh
+  #     - -c
+  #     - |
+  #       ffmpeg -re -stream_loop -1 -i /sample/AWS.mp4 \
+  #         -c:v libx264 -preset veryfast -tune zerolatency \
+  #         -c:a aac \
+  #         -f flv "rtmp://mediamtx:1935/live/demo"
+  #   profiles:
+  #     - sample-live
+  #   volumes:
+  #     - ./sample:/sample
+  #   depends_on:
+  #     - mediamtx
+  #   networks:
+  #     - streaming-net
 
   live-transcoder:
     build:
       context: ./backend
-    environment:
-      RTMP_PUBLISH_PASS: ${RTMP_PUBLISH_PASS:-changeme}
     command:
       - sh
       - -c
       - |
         while true; do
-          # mediamtx API 포트가 열릴 때까지 대기 (TCP 연결 확인, 인증 여부 무관)
+          # mediamtx API 포트가 열릴 때까지 대기 (TCP 연결 확인)
           until python3 -c "import socket,sys; s=socket.socket(); s.settimeout(2); r=s.connect_ex(('mediamtx',9997)); s.close(); sys.exit(0 if r==0 else 1)" 2>/dev/null; do
             echo '[live-transcoder] mediamtx 대기 중...'
             sleep 2
           done
           echo '[live-transcoder] mediamtx 준비 완료, FFmpeg 시작'
+          # OBS가 이미 H264로 인코딩해서 보내므로 영상은 그대로 copy.
+          # 오디오만 AAC 44.1k/128k로 정규화. analyzeduration 넉넉히 줘서 SPS 수신 대기.
           ffmpeg -hide_banner -loglevel warning \
-            -analyzeduration 2000000 -probesize 5000000 \
+            -analyzeduration 10000000 -probesize 10000000 \
             -fflags nobuffer -flags low_delay \
-            -i "rtmp://mediamtx:1935/live/demo?user=publisher&pass=$${RTMP_PUBLISH_PASS}" \
-            -c:v libx264 -preset ultrafast -tune zerolatency \
-            -r 30 -g 30 -keyint_min 30 -sc_threshold 0 \
-            -b:v 2500k -maxrate 2500k -bufsize 5000k \
+            -i "rtmp://mediamtx:1935/live/demo" \
+            -c:v copy \
             -c:a aac -ar 44100 -b:a 128k \
-            -f flv "rtmp://mediamtx:1935/live/smooth?user=publisher&pass=$${RTMP_PUBLISH_PASS}"
+            -f flv "rtmp://mediamtx:1935/live/smooth"
           sleep 1
         done
     depends_on:

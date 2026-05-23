@@ -60,37 +60,14 @@ authMethod: internal
 # Internal authentication.
 # Enabled users.
 authInternalUsers:
-  # ① publisher 계정: 모든 path에 publish 가능. pass는 $(RTMP_PUBLISH_PASS) env 치환.
-  # OBS push URL: rtmp://publisher:<pass>@host:1935/live/demo
-- user: publisher
-  # pass는 docker-compose의 MTX_AUTHINTERNALUSERS_0_PASS env로 override됨
-  # (mediamtx.yml 내부의 $(VAR) 치환은 1.18.2에서 동작하지 않아 env override 사용)
-  pass: changeme
+  # 무인증: 모든 사용자에게 publish/read/playback/api/metrics/pprof 허용.
+- user: any
+  pass:
   ips: []
   permissions:
   - action: publish
-    path:
   - action: read
-    path:
   - action: playback
-    path:
-
-  # ② 그 외(any): read/playback만 허용. publish 거부 — 이게 핵심 변경.
-- user: any
-  pass:
-  ips: []
-  permissions:
-  - action: read
-    path:
-  - action: playback
-    path:
-
-  # ③ 로컬호스트 관리자: api/metrics/pprof 무인증.
-  #    9997은 host에 매핑되지 않으므로 컨테이너 내부에서만 접근 가능.
-- user: any
-  pass:
-  ips: ['127.0.0.1', '::1']
-  permissions:
   - action: api
   - action: metrics
   - action: pprof

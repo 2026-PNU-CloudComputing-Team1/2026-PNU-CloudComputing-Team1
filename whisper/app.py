@@ -26,7 +26,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # tiny/base/small/medium/large 중 선택
 # 일단 base 모델로 테스트, 성능 부족하면 small로 올리기
 # medium/large는 CPU에서 처리 불가
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 # 항상 한국어 음성으로 감지
 SOURCE_LANG = os.getenv("SOURCE_LANG", "ko")
 
@@ -59,14 +59,15 @@ WHISPER_INITIAL_PROMPT = os.getenv(
 )
 
 
-def check_wav_duration(audio_path: str) -> None:
-    # HLS 세그먼트가 SEGMENT_DURATION과 다르면 end_pts가 틀어짐
+def check_wav_duration(audio_path: str) -> bool:
     with wave.open(audio_path, "rb") as wf:
         actual = wf.getnframes() / wf.getframerate()
     if abs(actual - SEGMENT_DURATION) > 0.1:
-        raise ValueError(
-            f"[whisper] WAV 길이 불일치: 기대={SEGMENT_DURATION}s, 실제={actual:.3f}s ({audio_path})"
+        log.warning(
+            f"[whisper] WAV 길이 불일치, 스킵: 기대={SEGMENT_DURATION}s, 실제={actual:.3f}s ({audio_path})"
         )
+        return False
+    return True
 
 
 def detect_silence(audio_path: str) -> bool:
@@ -259,8 +260,8 @@ def main():
             log.warning(f"[whisper] 파일 없음, 스킵: {audio_path}")
             continue
 
-        # HLS 세그먼트 길이 검증
-        check_wav_duration(audio_path)
+        if not check_wav_duration(audio_path):
+            continue
 
         buffer.append(job)
         buffer_duration += SEGMENT_DURATION

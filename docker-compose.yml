@@ -102,10 +102,10 @@ services:
     build:
       context: ./whisper
       args:
-        WHISPER_MODEL: base
+        WHISPER_MODEL: small
     environment:
       REDIS_URL: redis://redis:6379
-      WHISPER_MODEL: base
+      WHISPER_MODEL: small
       SOURCE_LANG: ko
       SEGMENT_DURATION: 1.5
       BUFFER_MAX_SEC: 3
@@ -179,7 +179,7 @@ services:
       REDIS_URL: redis://redis:6379
       INPUT_URL: /sample/demo.mp4
       OUTPUT_DIR: /data/audio
-      SEGMENT_DURATION: 2
+      SEGMENT_DURATION: 1.5
       REALTIME: "true"
     volumes:
       - audio-data:/data/audio
@@ -198,7 +198,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       SAMPLE_DIR: /sample
-      SEGMENT_DURATION: 2
+      SEGMENT_DURATION: 1.5
       REALTIME: "true"
     volumes:
       - ./sample:/sample

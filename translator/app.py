@@ -54,11 +54,20 @@ def write_vtt(lang: str, segment_num: int, start_pts: float, end_pts: float, tex
     os.makedirs(lang_dir, exist_ok=True)
 
     path = os.path.join(lang_dir, f"seg{segment_num:04d}.vtt")
-    start_ts = pts_to_vtt_ts(start_pts)
-    end_ts   = pts_to_vtt_ts(max(end_pts, start_pts + 0.1))
+    # segment-local 타임스탬프: cue를 0초 기준으로 작성하고
+    # X-TIMESTAMP-MAP으로 MPEGTS PTS와 매핑해 hls.js가 영상과 정렬하도록 함
+    duration = max(end_pts - start_pts, 0.1)
+    end_local_ts = pts_to_vtt_ts(duration)
+    mpegts_pts = int(start_pts * 90000)
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"WEBVTT\n\n{start_ts} --> {end_ts}\n{text}\n")
+        f.write(
+            f"WEBVTT\n"
+            f"X-TIMESTAMP-MAP=MPEGTS:{mpegts_pts},LOCAL:00:00:00.000\n"
+            f"\n"
+            f"00:00:00.000 --> {end_local_ts}\n"
+            f"{text}\n"
+        )
 
     return path
 

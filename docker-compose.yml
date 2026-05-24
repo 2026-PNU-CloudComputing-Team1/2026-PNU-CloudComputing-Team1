@@ -111,8 +111,8 @@ services:
       BUFFER_MAX_SEC: 3
       WHISPER_BEAM_SIZE: 3
       MIN_TEXT_CHARS: 3
-      MAX_NO_SPEECH_PROB: 0.65
-      MIN_AVG_LOGPROB: -1.0
+      MAX_NO_SPEECH_PROB: 0.75
+      MIN_AVG_LOGPROB: -1.5
       SILENCE_RMS_THRESHOLD: 120
       WHISPER_VAD_FILTER: "false"
     volumes:

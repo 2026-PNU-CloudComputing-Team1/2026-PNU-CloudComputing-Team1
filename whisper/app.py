@@ -190,7 +190,7 @@ def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
             published.append(text)
 
         if not published:
-            log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 묵음 구간, 스킵")
+            log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 신뢰도 미달, 스킵")
             return
 
         combined_text = normalize_text(" ".join(published))

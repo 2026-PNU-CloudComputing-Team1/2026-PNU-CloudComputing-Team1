@@ -1,26 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
+import EdgeMap from './EdgeMap';
+import {
+  LOCATIONS,
+  checkAllEdges,
+  pickEdge,
+  pickSubtitleSource,
+  probeSubtitleFetch,
+} from '../lib/edgeRouting';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
-const HLS_URL = import.meta.env.VITE_HLS_URL || 'http://localhost:8888/live/smooth/index.m3u8';
-const MP4_URL = `${API_URL}/media/AWS.mp4`;
+const FALLBACK_HLS_URL = import.meta.env.VITE_HLS_URL || 'http://localhost:8080/hls/live/smooth/index.m3u8';
+const HLS_PATH = '/hls/live/smooth/index.m3u8';
 
 const LANGUAGES = [
   { code: 'original', label: '한국어', short: 'KO' },
   { code: 'en', label: 'English', short: 'EN' },
   { code: 'ja', label: '日本語', short: 'JA' },
   { code: 'zh', label: '中文', short: 'ZH' },
-];
-
-const PIPELINE_STEPS = [
-  'OBS RTMP ingest',
-  'MediaMTX RTMP routing',
-  'FFmpeg live-transcoder',
-  'HLS playback with hls.js',
-  'FFmpeg audio segments',
-  'Whisper STT via Redis queue',
-  'WebSocket caption delivery',
 ];
 
 function formatTime(seconds) {
@@ -47,22 +45,32 @@ function StreamPlayer({ streamId }) {
   const [stream, setStream] = useState(null);
   const [currentSubtitle, setCurrentSubtitle] = useState(null);
   const [subtitles, setSubtitles] = useState([]);
-  const [pendingSubtitles, setPendingSubtitles] = useState([]);
   const [viewers, setViewers] = useState(0);
   const [health, setHealth] = useState(null);
   const videoRef = useRef(null);
   const historyRef = useRef(null);
   const hlsRef = useRef(null);
-  const demoStartedRef = useRef(false);
   const captionSessionStartedRef = useRef(false);
-  const acceptCaptionsRef = useRef(false);
-  const [mode, setMode] = useState('demo');
-  const [videoSource, setVideoSource] = useState('mp4');
+  const [locationId, setLocationId] = useState('busan');
+  const [healthMap, setHealthMap] = useState({ kr: true, jp: true, cn: true, us: true });
+  const [busyEdgeIds, setBusyEdgeIds] = useState(new Set());
+  const [subtitleProbe, setSubtitleProbe] = useState(null);
+  // streamLive: OBS 송출이 들어와 HLS 매니페스트가 정상 파싱되었는지 여부
+  // null = 검사 중, true = 방송 들어옴, false = 방송 미수신/끊김
+  const [streamLive, setStreamLive] = useState(null);
+  const [streamError, setStreamError] = useState(null);
 
-  const sttStatus = useMemo(() => {
-    if (mode === 'demo') return playing ? 'Demo STT running' : 'Demo STT ready';
-    return playing ? 'Live STT running' : 'Live STT ready';
-  }, [mode, playing]);
+  const currentEdge = useMemo(() => pickEdge(locationId, healthMap), [locationId, healthMap]);
+  const subtitleRoute = useMemo(
+    () => pickSubtitleSource(language, currentEdge),
+    [language, currentEdge],
+  );
+  const hlsSrc = useMemo(() => {
+    if (currentEdge) return `${currentEdge.url}${HLS_PATH}`;
+    return FALLBACK_HLS_URL;
+  }, [currentEdge]);
+
+  const sttStatus = playing ? 'Live STT running' : 'Live STT ready';
 
   const selectedText = useMemo(() => {
     if (!currentSubtitle) return '';
@@ -71,8 +79,6 @@ function StreamPlayer({ streamId }) {
   }, [currentSubtitle, language]);
 
   useEffect(() => {
-    fetch(`${API_URL}/streams/${streamId}/caption-demo/stop`, { method: 'POST' }).catch(() => {});
-
     fetch(`${API_URL}/health`)
       .then((response) => response.json())
       .then(setHealth)
@@ -84,35 +90,18 @@ function StreamPlayer({ streamId }) {
       .catch(() => setStream(null));
 
     setSubtitles([]);
-    setPendingSubtitles([]);
     setCurrentSubtitle(null);
-    acceptCaptionsRef.current = false;
   }, [streamId]);
 
   useEffect(() => {
     const socket = new WebSocket(`${WS_URL}/ws/stream/${streamId}`);
 
-    socket.addEventListener('open', () => {
-      setConnected(true);
-    });
+    socket.addEventListener('open', () => setConnected(true));
 
     socket.addEventListener('message', (event) => {
       const message = JSON.parse(event.data);
 
       if (message.type === 'subtitle') {
-        if (!acceptCaptionsRef.current && mode !== 'live') return;
-
-        if (mode === 'demo') {
-          const video = videoRef.current;
-          if (video && message.data.timestamp > video.currentTime + 0.3) {
-            setPendingSubtitles((previous) => {
-              const withoutDuplicate = previous.filter((item) => item.id !== message.data.id);
-              return [...withoutDuplicate, message.data].sort((a, b) => a.timestamp - b.timestamp);
-            });
-            return;
-          }
-        }
-
         setCurrentSubtitle(message.data);
         setSubtitles((previous) => {
           const withoutDuplicate = previous.filter((item) => item.id !== message.data.id);
@@ -125,8 +114,6 @@ function StreamPlayer({ streamId }) {
       if (message.type === 'subtitle_reset') {
         setCurrentSubtitle(null);
         setSubtitles([]);
-        setPendingSubtitles([]);
-        acceptCaptionsRef.current = true;
       }
 
       if (message.type === 'viewer_update') {
@@ -147,56 +134,13 @@ function StreamPlayer({ streamId }) {
       setPlaying(false);
     });
 
-    socket.addEventListener('error', () => {
-      setConnected(false);
-    });
+    socket.addEventListener('error', () => setConnected(false));
 
     return () => socket.close();
-  }, [mode, streamId]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.pause();
-    video.currentTime = 0;
-    setPlaying(false);
-    demoStartedRef.current = false;
-    captionSessionStartedRef.current = false;
-    acceptCaptionsRef.current = false;
   }, [streamId]);
 
-  useEffect(() => {
-    if (!playing || mode !== 'demo' || pendingSubtitles.length === 0) return undefined;
-
-    const timer = window.setInterval(() => {
-      const video = videoRef.current;
-      if (!video) return;
-
-      setPendingSubtitles((pending) => {
-        const visibleUntil = video.currentTime + 0.15;
-        const due = pending.filter((item) => item.timestamp <= visibleUntil);
-        const waiting = pending.filter((item) => item.timestamp > visibleUntil);
-
-        if (due.length > 0) {
-          setCurrentSubtitle(due[due.length - 1]);
-          setSubtitles((previous) => {
-            const merged = [...previous];
-            due.forEach((item) => {
-              if (!merged.some((existing) => existing.id === item.id)) {
-                merged.push(item);
-              }
-            });
-            return merged.sort((a, b) => a.timestamp - b.timestamp).slice(-30);
-          });
-        }
-
-        return waiting;
-      });
-    }, 100);
-
-    return () => window.clearInterval(timer);
-  }, [mode, pendingSubtitles.length, playing]);
-
+  // HLS 바인딩 — hlsSrc가 바뀌면(엣지 페일오버 등) 재바인딩.
+  // 매니페스트 파싱 성공/실패로 streamLive 갱신.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
@@ -206,22 +150,8 @@ function StreamPlayer({ streamId }) {
       hlsRef.current = null;
     }
 
-    video.pause();
-    setPlaying(false);
-    acceptCaptionsRef.current = false;
-    demoStartedRef.current = false;
-    captionSessionStartedRef.current = false;
-    setCurrentSubtitle(null);
-    setSubtitles([]);
-    setPendingSubtitles([]);
-    stopCaptionDemo();
-
-    if (mode === 'demo') {
-      video.src = MP4_URL;
-      video.currentTime = 0;
-      setVideoSource('mp4');
-      return undefined;
-    }
+    setStreamLive(null);
+    setStreamError(null);
 
     if (Hls.isSupported()) {
       const hls = new Hls({
@@ -231,24 +161,40 @@ function StreamPlayer({ streamId }) {
         liveMaxLatencyDurationCount: 3,
         maxLiveSyncPlaybackRate: 1.5,
         startPosition: -1,
+        manifestLoadingMaxRetry: 1,
+        manifestLoadingRetryDelay: 1000,
       });
-      hls.loadSource(HLS_URL);
+      hls.loadSource(hlsSrc);
       hls.attachMedia(video);
       hlsRef.current = hls;
+
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setVideoSource('hls');
+        setStreamLive(true);
+        setStreamError(null);
         seekToLiveEdge(video);
       });
+
       hls.on(Hls.Events.LEVEL_LOADED, () => {
-        if (!video.paused) {
-          seekToLiveEdge(video, 1.5);
-        }
+        if (!video.paused) seekToLiveEdge(video, 1.5);
       });
+
       hls.on(Hls.Events.ERROR, (_, data) => {
+        // 매니페스트 로드 실패 = OBS 미송출 또는 mediamtx 미연결로 간주
+        const isManifestLoadFail =
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+          data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+          data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR;
+        if (isManifestLoadFail) {
+          setStreamLive(false);
+          setStreamError(data.details);
+          return;
+        }
         if (data.fatal) {
-          hls.recoverMediaError();
+          // 미디어 에러는 일단 복구 시도
+          try { hls.recoverMediaError(); } catch { setStreamLive(false); }
         }
       });
+
       return () => {
         hls.destroy();
         hlsRef.current = null;
@@ -256,15 +202,36 @@ function StreamPlayer({ streamId }) {
     }
 
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = HLS_URL;
-      setVideoSource('hls');
-      return undefined;
+      video.src = hlsSrc;
+      // Safari 등 네이티브 HLS — 매니페스트 도달 여부를 loadedmetadata로 판정
+      const onLoadedMeta = () => setStreamLive(true);
+      const onError = () => { setStreamLive(false); setStreamError('native-hls-error'); };
+      video.addEventListener('loadedmetadata', onLoadedMeta);
+      video.addEventListener('error', onError);
+      return () => {
+        video.removeEventListener('loadedmetadata', onLoadedMeta);
+        video.removeEventListener('error', onError);
+      };
     }
 
-    video.src = MP4_URL;
-    setVideoSource('mp4');
+    setStreamLive(false);
+    setStreamError('hls-not-supported');
     return undefined;
-  }, [mode]);
+  }, [hlsSrc]);
+
+  // 방송 미수신 상태에서 5초마다 재시도 — OBS가 늦게 켜지는 케이스 대응
+  useEffect(() => {
+    if (streamLive !== false) return undefined;
+    const timer = window.setInterval(() => {
+      const hls = hlsRef.current;
+      if (hls) {
+        try { hls.loadSource(hlsSrc); hls.startLoad(); } catch (e) { /* noop */ }
+      } else if (videoRef.current?.canPlayType('application/vnd.apple.mpegurl')) {
+        videoRef.current.src = hlsSrc;
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [streamLive, hlsSrc]);
 
   useEffect(() => {
     const history = historyRef.current;
@@ -273,72 +240,93 @@ function StreamPlayer({ streamId }) {
   }, [subtitles]);
 
   useEffect(() => {
-    if (!playing || mode !== 'live') return undefined;
-
+    if (!playing) return undefined;
     const timer = window.setInterval(() => {
       seekToLiveEdge(videoRef.current, 1.5);
     }, 2000);
-
     return () => window.clearInterval(timer);
-  }, [mode, playing]);
+  }, [playing]);
 
-  const stopCaptionDemo = () => {
+  // 엣지 헬스체크 polling — 3초마다 4개 엣지에 GET /health
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const status = await checkAllEdges();
+      if (!cancelled) setHealthMap(status);
+    };
+    tick();
+    const timer = window.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  // 자막 출처 시연 — 현재 라우팅된 곳에서 vtt playlist를 한 번 fetch해
+  // 응답 시간/캐시 상태를 UI에 노출. 화면 자막 표시는 WebSocket으로 그대로 사용.
+  useEffect(() => {
+    let cancelled = false;
+    const probe = async () => {
+      const result = await probeSubtitleFetch(subtitleRoute.source, language);
+      if (!cancelled) setSubtitleProbe({ ...result, viaOrigin: subtitleRoute.viaOrigin });
+    };
+    probe();
+    const timer = window.setInterval(probe, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [language, subtitleRoute.source.url, subtitleRoute.viaOrigin]);
+
+  const handleToggleEdge = async (edgeId, isAlive) => {
+    setBusyEdgeIds((prev) => {
+      const next = new Set(prev);
+      next.add(edgeId);
+      return next;
+    });
+    try {
+      const action = isAlive ? 'stop' : 'start';
+      await fetch(`${API_URL}/api/edges/${edgeId}/${action}`, { method: 'POST' });
+      const status = await checkAllEdges();
+      setHealthMap(status);
+    } catch (err) {
+      console.error('[edge-toggle] failed', err);
+    } finally {
+      setBusyEdgeIds((prev) => {
+        const next = new Set(prev);
+        next.delete(edgeId);
+        return next;
+      });
+    }
+  };
+
+  const startCaptionSession = () => {
+    // 라이브 자막 파이프라인 시작 — 백엔드가 mediamtx 음성을 추출해 STT로 보냄
+    const params = new URLSearchParams({
+      start_at: '0',
+      reset: String(!captionSessionStartedRef.current),
+      source: 'live',
+    });
+    fetch(`${API_URL}/streams/${streamId}/caption-demo/start?${params.toString()}`, { method: 'POST' })
+      .then(() => { captionSessionStartedRef.current = true; })
+      .catch(() => {});
+  };
+
+  const stopCaptionSession = () => {
     fetch(`${API_URL}/streams/${streamId}/caption-demo/stop`, { method: 'POST' }).catch(() => {});
   };
 
-  const switchMode = (nextMode) => {
-    if (nextMode === mode) return;
-    setMode(nextMode);
-  };
-
   const togglePlay = () => {
-    if (!videoRef.current) return;
     const video = videoRef.current;
-    if (videoRef.current.paused) {
-      if (!demoStartedRef.current) {
-        demoStartedRef.current = true;
-        acceptCaptionsRef.current = true;
-        const useLiveCaptions = mode === 'live';
-        const startAt = useLiveCaptions ? 0 : video.currentTime || 0;
-        const reset = useLiveCaptions
-          ? !captionSessionStartedRef.current
-          : startAt < 0.5 || video.ended;
-
-        if (reset) {
-          setCurrentSubtitle(null);
-          setSubtitles([]);
-          setPendingSubtitles([]);
-          if (!useLiveCaptions) {
-            video.currentTime = 0;
-          }
-        }
-
-        const params = new URLSearchParams({
-          start_at: String(reset ? 0 : startAt),
-          reset: String(reset),
-          source: useLiveCaptions ? 'live' : 'file',
-        });
-        fetch(`${API_URL}/streams/${streamId}/caption-demo/start?${params.toString()}`, { method: 'POST' })
-          .then(() => {
-            captionSessionStartedRef.current = true;
-          })
-          .catch(() => {
-            demoStartedRef.current = false;
-          });
-      }
-      if (mode === 'live') {
-        seekToLiveEdge(video);
-      }
-      videoRef.current.play().then(() => {
-        if (mode === 'live') {
-          seekToLiveEdge(video);
-        }
-      }).catch(() => setPlaying(false));
+    if (!video) return;
+    if (video.paused) {
+      if (streamLive !== true) return; // 방송 안 들어왔으면 재생 불가
+      startCaptionSession();
+      seekToLiveEdge(video);
+      video.play().then(() => seekToLiveEdge(video)).catch(() => setPlaying(false));
     } else {
-      acceptCaptionsRef.current = false;
-      videoRef.current.pause();
-      stopCaptionDemo();
-      demoStartedRef.current = false;
+      video.pause();
+      stopCaptionSession();
     }
   };
 
@@ -359,8 +347,9 @@ function StreamPlayer({ streamId }) {
           </span>
           <span className="status">Viewers {viewers}</span>
           <span className="status">Cache {health?.redis || 'checking'}</span>
-          <span className="status">Mode {mode === 'live' ? 'LIVE' : 'DEMO'}</span>
-          <span className="status">Video {videoSource.toUpperCase()}</span>
+          <span className={streamLive ? 'status good' : 'status bad'}>
+            {streamLive === null ? 'Stream checking...' : streamLive ? 'Stream LIVE' : 'Stream OFFLINE'}
+          </span>
           <span className={playing ? 'status good' : 'status'}>{sttStatus}</span>
           <span className="status">Audio 1.5s / Buffer 3s</span>
         </div>
@@ -375,27 +364,32 @@ function StreamPlayer({ streamId }) {
               preload="metadata"
               playsInline
               onPlay={() => setPlaying(true)}
-              onPause={() => {
-                setPlaying(false);
-                acceptCaptionsRef.current = false;
-              }}
-              onEnded={() => {
-                setPlaying(false);
-                acceptCaptionsRef.current = false;
-                stopCaptionDemo();
-                demoStartedRef.current = false;
-              }}
+              onPause={() => setPlaying(false)}
+              onEnded={() => { setPlaying(false); stopCaptionSession(); }}
             />
             <div className="live-indicator">
               <span />
-              {mode === 'live' ? 'LIVE' : 'DEMO'}
+              LIVE
             </div>
+            {streamLive !== true && (
+              <div className="stream-offline-overlay">
+                <strong>📡 방송이 들어오지 않습니다</strong>
+                <p>
+                  {streamLive === null
+                    ? 'HLS 매니페스트 확인 중...'
+                    : 'OBS에서 RTMP 송출을 시작해 주세요. 자동으로 5초마다 재시도합니다.'}
+                </p>
+                {streamError && <small>error: {streamError}</small>}
+              </div>
+            )}
             <div className="subtitle-layer">
               <p>{selectedText || '실시간 자막을 기다리는 중입니다.'}</p>
               {currentSubtitle && <small>{formatTime(currentSubtitle.timestamp)}</small>}
             </div>
             <div className="controls">
-              <button type="button" onClick={togglePlay}>{playing ? 'Pause' : 'Play'}</button>
+              <button type="button" onClick={togglePlay} disabled={streamLive !== true}>
+                {playing ? 'Pause' : 'Play'}
+              </button>
               <button type="button" onClick={openFullscreen}>Fullscreen</button>
             </div>
           </div>
@@ -410,11 +404,7 @@ function StreamPlayer({ streamId }) {
             {subtitles.length === 0 ? (
               <div className="empty-history">
                 <strong>Waiting for speech</strong>
-                <p>
-                  {mode === 'live'
-                    ? 'OBS에서 들어온 음성이 인식되면 이곳에 자막이 시간순으로 쌓입니다.'
-                    : 'Play를 누르면 데모 음성 인식 결과가 이곳에 쌓입니다.'}
-                </p>
+                <p>OBS에서 들어온 음성이 인식되면 이곳에 자막이 시간순으로 쌓입니다.</p>
               </div>
             ) : (
               subtitles.map((subtitle) => (
@@ -435,29 +425,61 @@ function StreamPlayer({ streamId }) {
         </aside>
       </section>
 
-      <section className="settings-panel">
-        <div>
-          <h2>Playback Mode</h2>
-          <div className="mode-grid">
-            <button
-              type="button"
-              className={mode === 'demo' ? 'mode-button active' : 'mode-button'}
-              onClick={() => switchMode('demo')}
-            >
-              <strong>Demo Video</strong>
-              <span>Sample MP4 + file STT test</span>
-            </button>
-            <button
-              type="button"
-              className={mode === 'live' ? 'mode-button active' : 'mode-button'}
-              onClick={() => switchMode('live')}
-            >
-              <strong>Live Stream</strong>
-              <span>OBS RTMP + HLS + live STT</span>
-            </button>
+      <section className="edge-panel">
+        <div className="edge-header">
+          <div>
+            <h2>Global Edge Network</h2>
+            <p>위치 기반 라우팅 + 페일오버 시연</p>
           </div>
+          <label className="location-select">
+            <span>Your Location</span>
+            <select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+              {LOCATIONS.map((loc) => (
+                <option key={loc.id} value={loc.id}>{loc.label}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
+        <EdgeMap
+          healthMap={healthMap}
+          currentEdgeId={currentEdge?.id}
+          onToggleEdge={handleToggleEdge}
+          busyEdgeIds={busyEdgeIds}
+        />
+
+        <div className="routing-info">
+          <div className="route-row">
+            <span className="route-label">Video (.ts / m3u8)</span>
+            <span className="route-value">
+              {currentEdge ? `${currentEdge.label} — ${currentEdge.url}` : 'All edges down → Origin fallback'}
+            </span>
+          </div>
+          <div className="route-row">
+            <span className="route-label">Subtitle ({language.toUpperCase()})</span>
+            <span className="route-value">
+              {subtitleRoute.source.label} — {subtitleRoute.source.url}
+              {subtitleRoute.viaOrigin && currentEdge && (
+                <em> &nbsp; ↳ {currentEdge.label}는 {language.toUpperCase()} 자막 미보유 → 오리진 직접</em>
+              )}
+            </span>
+          </div>
+          {subtitleProbe && (
+            <div className="route-row probe">
+              <span className="route-label">Last vtt probe</span>
+              <span className="route-value">
+                {subtitleProbe.skipped
+                  ? `SKIP  ·  ${subtitleProbe.note}`
+                  : subtitleProbe.ok
+                  ? `HTTP ${subtitleProbe.status}  ·  ${subtitleProbe.elapsedMs}ms  ·  cache=${subtitleProbe.cacheStatus}  ·  edge-delay=${subtitleProbe.edgeDelayMs}ms`
+                  : `FAIL (${subtitleProbe.status || subtitleProbe.error})`}
+              </span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="settings-panel">
         <div>
           <h2>Subtitle Language</h2>
           <div className="language-grid">
@@ -475,14 +497,6 @@ function StreamPlayer({ streamId }) {
           </div>
         </div>
 
-        <div>
-          <h2>Implemented Pipeline</h2>
-          <ol className="pipeline">
-            {PIPELINE_STEPS.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-        </div>
       </section>
     </main>
   );

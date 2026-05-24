@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.models import StreamControlRequest, StreamInfo, SubtitleMessage, TranslationRequest
 from app.services.cache_service import CacheService
+from app.services.edge_service import EdgeService
 from app.services.subtitle_service import SubtitleService
 from app.services.translation_service import TranslationService
 from app.websocket_manager import WebSocketManager
@@ -56,6 +57,7 @@ cache = CacheService(REDIS_URL)
 translator = TranslationService()
 subtitle_service = SubtitleService(cache, translator)
 manager = WebSocketManager()
+edge_service = EdgeService()
 
 streams: Dict[str, StreamInfo] = {
     "demo": StreamInfo(
@@ -100,6 +102,36 @@ async def health():
         "redis": "enabled" if cache.is_redis_enabled else "memory-fallback",
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@app.get("/api/edges/status")
+async def edges_status():
+    """프론트가 polling해 엣지별 running 상태를 갱신한다."""
+    return {"available": edge_service.available, "edges": edge_service.status_all()}
+
+
+@app.post("/api/edges/{edge_id}/stop")
+async def edges_stop(edge_id: str):
+    from fastapi import HTTPException
+    from docker.errors import NotFound
+    try:
+        return edge_service.stop(edge_id)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/edges/{edge_id}/start")
+async def edges_start(edge_id: str):
+    from fastapi import HTTPException
+    from docker.errors import NotFound
+    try:
+        return edge_service.start(edge_id)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/streams/{stream_id}", response_model=StreamInfo)

@@ -89,6 +89,9 @@ services:
     volumes:
       - ./sample:/sample
       - audio-data:/data/audio
+      # 데모용: 프론트의 "Kill Edge" 버튼이 docker stop/start로 엣지 컨테이너를 제어
+      # 프로덕션에서는 절대 마운트하지 말 것 (root 권한 노출)
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
       - mediamtx
@@ -268,6 +271,12 @@ services:
       VITE_API_URL: http://localhost:8000
       VITE_WS_URL: ws://localhost:8000
       VITE_HLS_URL: http://localhost:8080/hls/live/smooth/index.m3u8
+      # 엣지 라우팅용 — 프론트가 위치 기반으로 영상/자막 출처를 선택
+      VITE_ORIGIN_URL: http://localhost:8080
+      VITE_EDGE_KR_URL: http://localhost:8081
+      VITE_EDGE_JP_URL: http://localhost:8082
+      VITE_EDGE_CN_URL: http://localhost:8083
+      VITE_EDGE_US_URL: http://localhost:8084
     ports:
       - "3000:3000"
     depends_on:

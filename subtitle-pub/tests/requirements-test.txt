@@ -1,3 +1,0 @@
-pytest
-pytest-asyncio
-redis[asyncio]==5.0.8

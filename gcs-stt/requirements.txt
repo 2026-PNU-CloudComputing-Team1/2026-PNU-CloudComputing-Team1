@@ -1,0 +1,2 @@
+google-cloud-speech==2.27.0
+redis==5.0.8

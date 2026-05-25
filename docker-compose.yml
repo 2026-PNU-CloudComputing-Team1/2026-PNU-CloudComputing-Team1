@@ -98,27 +98,21 @@ services:
     networks:
       - streaming-net
 
-  whisper:
+  gcs-stt:
     build:
-      context: ./whisper
-      args:
-        WHISPER_MODEL: small
+      context: ./gcs-stt
     environment:
       REDIS_URL: redis://redis:6379
-      WHISPER_MODEL: small
-      SOURCE_LANG: ko
+      SOURCE_LANG: ko-KR
       SEGMENT_DURATION: 1.5
       BUFFER_MAX_SEC: 3
-      WHISPER_BEAM_SIZE: 3
-      MIN_TEXT_CHARS: 3
-      MAX_NO_SPEECH_PROB: 0.75
-      MIN_AVG_LOGPROB: -1.5
       SILENCE_RMS_THRESHOLD: 120
-      WHISPER_VAD_FILTER: "false"
+      MIN_CONFIDENCE: 0.6
+      MIN_TEXT_CHARS: 3
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-key.json
     volumes:
       - audio-data:/data/audio
-      - ./sample:/sample
-      - hf-cache:/root/.cache/huggingface
+      - ./secrets/gcp-key.json:/secrets/gcp-key.json:ro
     depends_on:
       - redis
     networks:
@@ -186,7 +180,7 @@ services:
       - ./sample:/sample
     depends_on:
       - redis
-      - whisper
+      - gcs-stt
     networks:
       - streaming-net
 
@@ -204,7 +198,7 @@ services:
       - ./sample:/sample
     depends_on:
       - redis
-      - whisper
+      - gcs-stt
     networks:
       - streaming-net
 
@@ -291,5 +285,4 @@ networks:
 
 volumes:
   audio-data:
-  hf-cache:
   subtitle-data:

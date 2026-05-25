@@ -104,32 +104,39 @@ async def translate_all(
 
 
 async def handle_stt_result(msg: dict, r: aioredis.Redis, client: translate.Client) -> None:
-    segment_num = msg["segment_num"]
-    text        = msg["text"].strip()
-    start_pts   = float(msg.get("start_pts", 0.0))
-    end_pts     = float(msg.get("end_pts", start_pts + 2.0))
-    ingested_at = float(msg.get("ingested_at", time.time()))
+    segment_num     = msg["segment_num"]
+    text            = msg["text"].strip()
+    start_pts       = float(msg.get("start_pts", 0.0))
+    end_pts         = float(msg.get("end_pts", start_pts + 2.0))
+    ingested_at     = float(msg.get("ingested_at", time.time()))
+    stt_delay       = float(msg.get("stt_delay", 0.0))
+    buffer_wait     = float(msg.get("buffer_wait", 0.0))
 
     if not text:
         return
 
     log.info(f"[translator] seg{segment_num:04d} 번역 시작: '{text[:60]}'")
 
+    translate_start = time.time()
     translations = await translate_all(client, text, TARGET_LANGS)
-    subtitle_delay = time.time() - ingested_at
+    translation_delay = round(time.time() - translate_start, 2)
+    subtitle_delay    = round(time.time() - ingested_at, 2)
 
     # ① backend의 WebSocket 브로드캐스트용 — 모든 언어를 한 번에 묶어 publish.
     #    backend가 이 채널을 구독해 SubtitleMessage 그대로 프론트로 전달.
     await r.publish(
         "subtitle:translated",
         json.dumps({
-            "segment_num":    segment_num,
-            "original_text":  text,
-            "translations":   translations,
-            "start_pts":      start_pts,
-            "end_pts":        end_pts,
-            "subtitle_delay": round(subtitle_delay, 2),
-            "ingested_at":    ingested_at,
+            "segment_num":       segment_num,
+            "original_text":     text,
+            "translations":      translations,
+            "start_pts":         start_pts,
+            "end_pts":           end_pts,
+            "ingested_at":       ingested_at,
+            "buffer_wait":       buffer_wait,
+            "stt_delay":         stt_delay,
+            "translation_delay": translation_delay,
+            "subtitle_delay":    subtitle_delay,
         }),
     )
 
@@ -149,7 +156,7 @@ async def handle_stt_result(msg: dict, r: aioredis.Redis, client: translate.Clie
         )
         log.info(
             f"[translator] seg{segment_num:04d} {lang} 완료 "
-            f"| '{translated[:40]}' | delay={subtitle_delay:.1f}s"
+            f"| '{translated[:40]}' | stt={stt_delay:.1f}s tr={translation_delay:.1f}s e2e={subtitle_delay:.1f}s"
         )
 
 

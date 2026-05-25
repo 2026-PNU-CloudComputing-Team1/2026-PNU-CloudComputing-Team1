@@ -198,19 +198,23 @@ def flush_buffer(model: WhisperModel, r: redis.Redis, buffer: list) -> None:
             log.info(f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d}: 반복 환각 의심, 스킵")
             return
 
+        stt_delay = time.time() - ingested_at
+        buffer_wait = round(buffer[-1]["ingested_at"] - buffer[0]["ingested_at"], 2) if len(buffer) > 1 else 0.0
+
         result = {
             "segment_num": first_seg_num,
             "text": combined_text,
             "start_pts": base_pts,
             "end_pts": base_pts + (len(buffer) * SEGMENT_DURATION),
             "ingested_at": ingested_at,
+            "stt_delay": round(stt_delay, 2),
+            "buffer_wait": buffer_wait,
         }
         r.publish("stt:results", json.dumps(result))
 
-        stt_delay = time.time() - ingested_at
         log.info(
             f"[whisper] seg{first_seg_num:04d}~{last_seg_num:04d} 완료 "
-            f"| '{combined_text[:60]}' | {stt_delay:.1f}s"
+            f"| '{combined_text[:60]}' | stt={stt_delay:.1f}s buf={buffer_wait:.1f}s"
         )
     finally:
         # 성공/실패 관계없이 임시 병합 파일 삭제

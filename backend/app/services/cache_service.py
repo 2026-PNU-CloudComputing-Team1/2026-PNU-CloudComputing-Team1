@@ -55,3 +55,19 @@ class CacheService:
             return json.loads(raw) if raw else None
         items = self._memory.get(f"info:{stream_id}", [])
         return items[0] if items else None
+
+    async def append_metric(self, metric: Dict[str, Any], limit: int = 100) -> None:
+        if self._redis:
+            self._redis.lpush("metrics:latency", json.dumps(metric, ensure_ascii=False, default=str))
+            self._redis.ltrim("metrics:latency", 0, limit - 1)
+            self._redis.expire("metrics:latency", 3600)
+            return
+        items = self._memory.setdefault("__metrics__", [])
+        items.insert(0, metric)
+        del items[limit:]
+
+    async def recent_metrics(self, limit: int = 50) -> List[Dict[str, Any]]:
+        if self._redis:
+            raw_items = self._redis.lrange("metrics:latency", 0, limit - 1)
+            return [json.loads(item) for item in raw_items]
+        return list(self._memory.get("__metrics__", []))[:limit]

@@ -186,6 +186,11 @@ async def translate(request: TranslationRequest):
     }
 
 
+@app.get("/api/admin/metrics")
+async def admin_metrics(limit: int = 50):
+    return {"metrics": await cache.recent_metrics(limit)}
+
+
 @app.get("/subtitles/{stream_id}/recent")
 async def recent_subtitles(stream_id: str, limit: int = 20):
     return {
@@ -559,6 +564,16 @@ async def translated_subtitle_listener():
                 created_at=datetime.utcnow(),
             )
             await cache.append_subtitle(STT_STREAM_ID, subtitle.model_dump(mode="json"))
+            await cache.append_metric({
+                "segment_num":       segment_num,
+                "original_text":     text,
+                "translations":      translations,
+                "buffer_wait":       float(payload.get("buffer_wait", 0.0)),
+                "stt_delay":         float(payload.get("stt_delay", 0.0)),
+                "translation_delay": float(payload.get("translation_delay", 0.0)),
+                "e2e_delay":         float(payload.get("subtitle_delay", 0.0)),
+                "recorded_at":       datetime.utcnow().isoformat(),
+            })
             await manager.broadcast(
                 STT_STREAM_ID,
                 {

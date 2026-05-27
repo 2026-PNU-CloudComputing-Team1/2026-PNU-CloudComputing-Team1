@@ -103,18 +103,15 @@ services:
       context: ./gcs-stt
     environment:
       REDIS_URL: redis://redis:6379
+      RTMP_URL: rtmp://mediamtx:1935/live/smooth
       SOURCE_LANG: ko-KR
-      SEGMENT_DURATION: 1.5
-      BUFFER_MAX_SEC: 3
-      SILENCE_RMS_THRESHOLD: 120
-      MIN_CONFIDENCE: 0.6
-      MIN_TEXT_CHARS: 3
+      STREAM_ID: demo
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-key.json
     volumes:
-      - audio-data:/data/audio
       - ./secrets/gcp-key.json:/secrets/gcp-key.json:ro
     depends_on:
       - redis
+      - mediamtx
     networks:
       - streaming-net
 

@@ -45,6 +45,7 @@ function StreamPlayer({ streamId }) {
   const [stream, setStream] = useState(null);
   const [currentSubtitle, setCurrentSubtitle] = useState(null);
   const [subtitles, setSubtitles] = useState([]);
+  const [interimText, setInterimText] = useState('');
   const [viewers, setViewers] = useState(0);
   const [health, setHealth] = useState(null);
   const videoRef = useRef(null);
@@ -72,12 +73,6 @@ function StreamPlayer({ streamId }) {
 
   const sttStatus = playing ? 'Live STT running' : 'Live STT ready';
 
-  const selectedText = useMemo(() => {
-    if (!currentSubtitle) return '';
-    if (language === 'original') return currentSubtitle.original_text;
-    return currentSubtitle.translations?.[language] || currentSubtitle.original_text;
-  }, [currentSubtitle, language]);
-
   useEffect(() => {
     fetch(`${API_URL}/health`)
       .then((response) => response.json())
@@ -101,7 +96,19 @@ function StreamPlayer({ streamId }) {
     socket.addEventListener('message', (event) => {
       const message = JSON.parse(event.data);
 
+      if (message.type === 'subtitle_interim') {
+        console.log('[stt:interim]', message.data.text);
+        setInterimText(message.data.text);
+      }
+
       if (message.type === 'subtitle') {
+        console.log('[stt:final]', {
+          id: message.data.id,
+          timestamp: message.data.timestamp,
+          original: message.data.original_text,
+          translations: message.data.translations,
+        });
+        setInterimText('');
         setCurrentSubtitle(message.data);
         setSubtitles((previous) => {
           const withoutDuplicate = previous.filter((item) => item.id !== message.data.id);
@@ -112,8 +119,10 @@ function StreamPlayer({ streamId }) {
       }
 
       if (message.type === 'subtitle_reset') {
+        console.log('[stt:reset]');
         setCurrentSubtitle(null);
         setSubtitles([]);
+        setInterimText('');
       }
 
       if (message.type === 'viewer_update') {
@@ -383,8 +392,14 @@ function StreamPlayer({ streamId }) {
               </div>
             )}
             <div className="subtitle-layer">
-              <p>{selectedText || '실시간 자막을 기다리는 중입니다.'}</p>
-              {currentSubtitle && <small>{formatTime(currentSubtitle.timestamp)}</small>}
+              {interimText && language === 'original' && (
+                <p className="subtitle-interim">
+                  {interimText.length > 80 ? `…${interimText.slice(-80)}` : interimText}
+                </p>
+              )}
+              {!interimText && !currentSubtitle && (
+                <p>실시간 자막을 기다리는 중입니다.</p>
+              )}
             </div>
             <div className="controls">
               <button type="button" onClick={togglePlay} disabled={streamLive !== true}>

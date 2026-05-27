@@ -160,6 +160,60 @@ async def handle_stt_result(msg: dict, r: aioredis.Redis, client: translate.Clie
         )
 
 
+INTERIM_STABILITY_MIN = float(os.getenv("INTERIM_STABILITY_MIN", "0.8"))
+
+# stream_id → 마지막으로 번역해서 publish한 어절 경계 텍스트
+# 같은 텍스트면 중복 번역 안 함. final 도착 시 비움.
+_interim_last: dict[str, str] = {}
+
+
+async def handle_interim(msg: dict, r: aioredis.Redis, client: translate.Client) -> None:
+    """interim 결과를 어절(공백) 경계 + stability 기준으로 번역해 publish.
+
+    조건:
+      - stability >= INTERIM_STABILITY_MIN (기본 0.8)
+      - 텍스트에 공백이 하나라도 있어야 (= 최소 한 어절 끝남)
+      - 마지막 공백 이전 텍스트가 지난 번역과 다를 때
+    """
+    text      = (msg.get("text") or "").strip()
+    stream_id = msg.get("stream_id", "demo")
+    stability = float(msg.get("stability", 0.0))
+
+    if not text or stability < INTERIM_STABILITY_MIN:
+        return
+
+    last_space = text.rfind(" ")
+    if last_space <= 0:
+        return  # 아직 한 어절도 안 끝남
+
+    boundary_text = text[:last_space].strip()
+    if not boundary_text:
+        return
+
+    last_translated = _interim_last.get(stream_id, "")
+    if boundary_text == last_translated:
+        return  # 변동 없음
+
+    # 새 utterance 시작 감지 (현재 경계가 지난 번역의 확장이 아니면 리셋)
+    if last_translated and not boundary_text.startswith(last_translated):
+        log.info(f"[translator] interim 새 발화 감지, state 리셋")
+
+    translations = await translate_all(client, boundary_text, TARGET_LANGS)
+    await r.publish(
+        "subtitle:interim_translated",
+        json.dumps({
+            "stream_id":     stream_id,
+            "original_text": boundary_text,
+            "translations":  translations,
+            "stability":     stability,
+        }),
+    )
+    _interim_last[stream_id] = boundary_text
+    log.info(
+        f"[translator] interim 번역 stability={stability:.2f} | '{boundary_text[:40]}'"
+    )
+
+
 async def main() -> None:
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     await r.ping()
@@ -171,15 +225,22 @@ async def main() -> None:
     log.info("[translator] Google Cloud Translation 클라이언트 초기화 완료")
 
     pubsub = r.pubsub()
-    await pubsub.subscribe("stt:results")
-    log.info("[translator] stt:results 구독 시작")
+    await pubsub.subscribe("stt:results", "stt:interim")
+    log.info("[translator] stt:results, stt:interim 구독 시작")
 
     async for message in pubsub.listen():
         if message["type"] != "message":
             continue
         try:
+            channel = message["channel"]
             msg = json.loads(message["data"])
-            await handle_stt_result(msg, r, client)
+            if channel == "stt:results":
+                # final 도착 → 해당 stream의 interim state 비워서 다음 발화 깔끔히 시작
+                stream_id = msg.get("stream_id", "demo")
+                _interim_last.pop(stream_id, None)
+                await handle_stt_result(msg, r, client)
+            elif channel == "stt:interim":
+                await handle_interim(msg, r, client)
         except Exception as exc:
             log.error(f"[translator] 처리 중 오류: {exc}")
 

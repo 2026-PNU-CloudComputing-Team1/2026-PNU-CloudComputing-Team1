@@ -46,6 +46,7 @@ function StreamPlayer({ streamId }) {
   const [currentSubtitle, setCurrentSubtitle] = useState(null);
   const [subtitles, setSubtitles] = useState([]);
   const [interimText, setInterimText] = useState('');
+  const [interimTranslations, setInterimTranslations] = useState({});
   const [viewers, setViewers] = useState(0);
   const [health, setHealth] = useState(null);
   const videoRef = useRef(null);
@@ -101,6 +102,11 @@ function StreamPlayer({ streamId }) {
         setInterimText(message.data.text);
       }
 
+      if (message.type === 'subtitle_interim_translated') {
+        console.log('[stt:interim_translated]', message.data);
+        setInterimTranslations(message.data.translations || {});
+      }
+
       if (message.type === 'subtitle') {
         console.log('[stt:final]', {
           id: message.data.id,
@@ -109,6 +115,7 @@ function StreamPlayer({ streamId }) {
           translations: message.data.translations,
         });
         setInterimText('');
+        setInterimTranslations({});
         setCurrentSubtitle(message.data);
         setSubtitles((previous) => {
           const withoutDuplicate = previous.filter((item) => item.id !== message.data.id);
@@ -123,6 +130,7 @@ function StreamPlayer({ streamId }) {
         setCurrentSubtitle(null);
         setSubtitles([]);
         setInterimText('');
+        setInterimTranslations({});
       }
 
       if (message.type === 'viewer_update') {
@@ -392,14 +400,23 @@ function StreamPlayer({ streamId }) {
               </div>
             )}
             <div className="subtitle-layer">
-              {interimText && language === 'original' && (
-                <p className="subtitle-interim">
-                  {interimText.length > 80 ? `…${interimText.slice(-80)}` : interimText}
-                </p>
-              )}
-              {!interimText && !currentSubtitle && (
-                <p>실시간 자막을 기다리는 중입니다.</p>
-              )}
+              {(() => {
+                // 한국어: GCS interim 원문, 그 외: translator의 어절 경계 번역 결과
+                const overlayText = language === 'original'
+                  ? interimText
+                  : (interimTranslations[language] || '');
+                if (overlayText) {
+                  return (
+                    <p className="subtitle-interim">
+                      {overlayText.length > 80 ? `…${overlayText.slice(-80)}` : overlayText}
+                    </p>
+                  );
+                }
+                if (!currentSubtitle) {
+                  return <p>실시간 자막을 기다리는 중입니다.</p>;
+                }
+                return null;
+              })()}
             </div>
             <div className="controls">
               <button type="button" onClick={togglePlay} disabled={streamLive !== true}>

@@ -76,9 +76,14 @@ def run_once(client: speech.SpeechClient, r: redis.Redis, seg_counter: list) -> 
         log.info("[gcs-stt] 스트리밍 인식 시작")
 
         for response in responses:
-            for result in response.results:
-                if not result.alternatives:
-                    continue
+            # GCS는 한 응답에 여러 result를 담아 보냄:
+            #   results[0]  = stable cumulative interim (누적 텍스트)
+            #   results[1+] = unstable extensions (방금 들린 단어 후보, 단편처럼 보임)
+            # 우리는 누적 텍스트만 쓰면 되므로 results[0]만 처리.
+            if not response.results:
+                continue
+            result = response.results[0]
+            if result.alternatives:
                 text = result.alternatives[0].transcript.strip()
                 if not text:
                     continue
@@ -95,12 +100,16 @@ def run_once(client: speech.SpeechClient, r: redis.Redis, seg_counter: list) -> 
                         "start_pts":   round(elapsed, 3),
                         "end_pts":     round(elapsed + 2.0, 3),
                         "ingested_at": now,
+                        "stream_id":   STREAM_ID,
                     }))
                     log.info("[gcs-stt] seg%04d 완료 | '%s'", seg_num, text[:60])
                 else:
+                    # stability: GCS가 추정한 interim 안정성 (0.0~1.0).
+                    # translator가 0.8 이상 + 어절 경계일 때만 번역하도록 필드 노출.
                     r.publish("stt:interim", json.dumps({
                         "text":      text,
                         "stream_id": STREAM_ID,
+                        "stability": float(result.stability or 0.0),
                     }))
 
     except Exception as exc:

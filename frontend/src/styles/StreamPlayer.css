@@ -153,7 +153,7 @@ h2 {
   bottom: 70px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   pointer-events: none;
 }
 
@@ -166,7 +166,7 @@ h2 {
   font-size: clamp(16px, 2vw, 24px);
   font-weight: 700;
   line-height: 1.45;
-  text-align: center;
+  text-align: left;
 }
 
 .subtitle-layer small {
@@ -180,7 +180,6 @@ h2 {
   font-size: clamp(13px, 1.6vw, 19px) !important;
   background: rgba(0, 0, 0, 0.5) !important;
   margin-bottom: 6px;
-  max-height: 3.2em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;

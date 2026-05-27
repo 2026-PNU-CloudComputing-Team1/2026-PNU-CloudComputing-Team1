@@ -72,14 +72,16 @@ stream_tasks: Dict[str, asyncio.Task] = {}
 caption_demo_tasks: Dict[str, asyncio.Task] = {}
 subtitle_listener_task: asyncio.Task | None = None
 interim_listener_task: asyncio.Task | None = None
+interim_translated_listener_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
 async def startup_event():
     await cache.set_stream("demo", streams["demo"].model_dump(mode="json"))
-    global subtitle_listener_task, interim_listener_task
-    subtitle_listener_task = asyncio.create_task(translated_subtitle_listener())
-    interim_listener_task  = asyncio.create_task(interim_subtitle_listener())
+    global subtitle_listener_task, interim_listener_task, interim_translated_listener_task
+    subtitle_listener_task            = asyncio.create_task(translated_subtitle_listener())
+    interim_listener_task             = asyncio.create_task(interim_subtitle_listener())
+    interim_translated_listener_task  = asyncio.create_task(translated_interim_listener())
 
 
 @app.on_event("shutdown")
@@ -88,6 +90,8 @@ async def shutdown_event():
         subtitle_listener_task.cancel()
     if interim_listener_task:
         interim_listener_task.cancel()
+    if interim_translated_listener_task:
+        interim_translated_listener_task.cancel()
 
 
 @app.get("/")
@@ -546,6 +550,49 @@ async def interim_subtitle_listener():
             await manager.broadcast(
                 STT_STREAM_ID,
                 {"type": "subtitle_interim", "data": {"text": text}},
+            )
+    except asyncio.CancelledError:
+        pubsub.close()
+        raise
+
+
+async def translated_interim_listener():
+    """translator가 어절 경계마다 publish한 subtitle:interim_translated를 브로드캐스트.
+
+    번역된 interim — 비-한국어 모드에서 실시간 자막 오버레이용.
+    페이로드: {stream_id, original_text, translations, stability}
+    """
+    try:
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        client.ping()
+        pubsub = client.pubsub()
+        pubsub.subscribe("subtitle:interim_translated")
+        logger.info("Translated interim listener subscribed channel=subtitle:interim_translated")
+    except Exception as exc:
+        logger.warning("Translated interim listener disabled: %s", exc)
+        return
+
+    try:
+        while True:
+            message = await read_pubsub_message(pubsub)
+            if not message or message.get("type") != "message":
+                continue
+
+            payload = json.loads(message["data"])
+            text = (payload.get("original_text") or "").strip()
+            translations = payload.get("translations") or {}
+            if not text:
+                continue
+
+            await manager.broadcast(
+                STT_STREAM_ID,
+                {
+                    "type": "subtitle_interim_translated",
+                    "data": {
+                        "original_text": text,
+                        "translations":  translations,
+                    },
+                },
             )
     except asyncio.CancelledError:
         pubsub.close()
